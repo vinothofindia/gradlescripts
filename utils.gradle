@@ -1,0 +1,171 @@
+
+def createDir(param){
+    def subdir = new File(param)
+
+    if( !subdir.exists() ) {
+        println("creating directory " + subdir)
+
+        if(subdir.mkdirs()) {
+            println("succeeded in making directory")
+            if(subdir.exists()) {
+                println("directory exists")
+            } else {
+                println("directory does not exist")
+            }
+        } else {
+            println("failed to make directory")
+        }
+    } else {
+        println("Directory exists already :" + subdir)
+    }
+}
+
+def createJunctions(WORKSPACE, external, tools){
+	
+	removeDirWin(external)
+	runCommand(WORKSPACE, "C:\\bin\\junction.exe $external $LOCAL_EXTERNAL_ROOT_WIN\\external")
+	
+	removeDirWin(tools)
+	runCommand(WORKSPACE, "C:\\bin\\junction.exe $tools $LOCAL_EXTERNAL_ROOT_WIN\\tools")	
+}
+
+def removeDirWin(dir){
+	if(new File(dir).exists()) {
+		exec {	
+			commandLine 'cmd', '/c', "rd /s /q $dir"
+			println "Removed existing directory $dir"
+		}
+	}
+}
+
+def removeDir(dir){
+	if(new File(dir).exists()) {
+		delete "$dir"
+		println "Removed existing directory $dir"
+	}
+}
+
+def runCommand(ws, comd){
+        exec {
+                workingDir "$ws"
+                //println "From : "+System.getProperty("user.dir")
+                println "FROM : $ws"
+                println "COMMAND : $comd"
+                if (System.properties['os.name'].toLowerCase().contains('windows')) {
+						def cmd = ['cmd', '/c']+comd
+						commandLine cmd
+                }else if(System.properties['os.name'].toLowerCase().contains('mac')) {
+			commandLine comd
+		}else{
+			environment 'PATH': '/opt/rh/devtoolset-2/root/usr/bin:'+System.env.PATH
+                        commandLine comd
+                }
+
+        }
+}
+
+
+def getTool(dest, src){
+    def file = new File(dest)
+
+    if( !file.exists() ) {
+        println("Downloading "+file+" from Artifactory")		
+		exec {
+			commandLine 'cmd', '/c', "curl -fL $src -o $dest"
+		}        
+	    if(file.exists()) {
+	        println(file.toString() + " downloaded")
+	    } else {
+	        println(file.toString() + " download failed")
+	    }        
+    } else {
+        println(file.toString() + " exists already")
+    }
+}
+
+def getExternal(_jfrog, dest, parent, _file, version){
+    def file = new File(dest+"\\$_file.$version"+'.zip')
+	
+	if(!parent.contains('/')){
+		parent = parent+'/'+version
+	}
+	def src = "$ART_DEP_PARENT/$EXT_DEP_PARENT/$parent/$_file.$version"+'.zip'
+	
+	println "File : "+file.toString()
+				
+	if( !file.exists() ) {
+		println("Downloading "+file+" from Artifactory")		
+		exec {
+			workingDir dest
+			commandLine 'cmd', '/c', "$_jfrog rt dl --flat=true $src"
+		}	    		
+		if(file.exists()) {
+			println(file.toString() + " downloaded")
+		} else {
+			println(file.toString() + " download failed")
+		}
+		
+	} else {
+		println(file.toString() + " exists already")
+	}	
+}
+
+def getDependency(nuget, _component, dep_version, _os, _config, pack_arch, _compiler,  _dependencies, toolkit, pathsep){	
+	//Getting Lib package
+	def lib_package = "${_component}-lib_${_os}_${_config}_${pack_arch}_${_compiler}"						
+	getDependentPackage(nuget, _component, lib_package, dep_version, _dependencies, toolkit, pathsep)
+	
+	//Getting Bin package
+	def bin_package = "${_component}_${_os}_${_config}_${pack_arch}_${_compiler}"						
+	getDependentPackage(nuget, _component, bin_package, dep_version, _dependencies, toolkit, pathsep)
+}
+
+def getDependentPackage(nuget, component, _package, version, _dependencies, toolkit, pathsep){
+    //Get the package	
+	def (type,os,config,arch,comp) = _package.split("_")
+	def _arch = 'x64'
+	if(arch.equals('intel32'))	_arch = 'x86' 
+	if(comp.equals('v140')){
+		comp = 'vc140'
+	}else if(comp.equals('clang70')){
+		comp = 'clang7'
+	}
+
+	println "List is $os $arch $comp $_arch"
+	runCommand(_dependencies, nuget+ ['install', _package, '-version', version, '-outputDirectory', _dependencies])	
+	
+	if (_package.contains('-lib')){
+			println _package + " is lib package\nRestructuring header files"			
+			copy {
+				from "${_dependencies}${pathsep}${component}-headers.${version}${pathsep}inc"
+				into "${toolkit}${pathsep}..${pathsep}${component}${pathsep}sdk${pathsep}include${pathsep}internal"
+			}
+			copy {
+				from "${_dependencies}${pathsep}${_package}.${version}${pathsep}libs"
+				into "${toolkit}${pathsep}${component}${pathsep}lib${pathsep}${os}${pathsep}${comp}${pathsep}${_arch}${pathsep}${config}"
+			}
+			
+	}else{
+		
+		copy {
+			from "${_dependencies}${pathsep}${_package}.${version}${pathsep}bin"
+			into "${toolkit}${pathsep}${component}${pathsep}bin${pathsep}${os}${pathsep}${comp}${pathsep}${_arch}${pathsep}${config}"
+		}
+		copy {
+			from "${_dependencies}${pathsep}${_package}.${version}${pathsep}bin"
+			into "${toolkit}${pathsep}run${pathsep}${os}${pathsep}${comp}${pathsep}${_arch}${pathsep}${config}"
+		}
+	}
+}
+
+
+// Export methods by turning them into closures
+ext{
+	createDir	= this.&createDir
+	removeDir	= this.&removeDir
+	getTool		= this.&getTool
+	getExternal	= this.&getExternal
+	getDependency	= this.&getDependency
+	createJunctions	= this.&createJunctions
+	runCommand	= this.&runCommand
+}
